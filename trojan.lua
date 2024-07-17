@@ -5,8 +5,8 @@
 --- Version: 0.0.2
 ---
 
-local coarseTLS12 = require('coarseTLS12')
-local coarseTLS13 = require('coarseTLS13')
+--local coarseTLS12 = require('coarseTLS12')
+--local coarseTLS13 = require('coarseTLS13')
 
 -- do not modify this table
 local debug_level = {
