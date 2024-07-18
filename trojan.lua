@@ -22,7 +22,7 @@ local GUARD = "\x0d\x0a" -- the guard bytes for locating Trojan bytes
 local default_settings =
 {
     debug_level = DEBUG,
-    ports = { 45447 },   -- the default TCP port for Trojan
+    ports = { 45447, 23003, 433 },   -- the default TCP port for Trojan
     reassemble = true, -- whether we try reassembly or not
     info_text = true,  -- show our own Info column data or TCP defaults
     ports_in_info = true, -- show TCP ports in Info column
@@ -124,7 +124,46 @@ local function doDissect(tvb, pktinfo, root)
         local tunnel_tree = root:add(pf_tunnel_data, tvb(0))
         pktinfo.cols.info = "Trojan Tunneled Data "
 
+
+        local save_port_type = pktinfo.port_type
+        pktinfo.port_type = _EPAN.PT_NONE
+        local save_can_desegment = pktinfo.can_desegment
+        pktinfo.can_desegment = 2
+        Dissector.get("tls"):call(tvb, pktinfo, tunnel_tree)
+
+        pktinfo.port_type = save_port_type
+        pktinfo.can_desegment = save_can_desegment
+
+        ---
+        --- The following HTTP dissection gives
+        ---     many Continuation on HTTP/1.1
+        ---     many Ignored Unknown Record or Malformed Frame on HTTP/2
+        ---
+        --Dissector.get("http-over-tls"):call(tvb, pktinfo, tunnel_tree)
+        Dissector.get("http2"):call(tvb, pktinfo, tunnel_tree)
+
+        ---
+        --- The following HTTP dissection gives
+        --- Lua Error: "...wireshark\epan\proto.c:7992: failed assertion "fixed_item->parent == tree"
+        ---
+
+        --local save_port_type = pktinfo.port_type
+        --pktinfo.port_type = _EPAN.PT_NONE
+        --local save_can_desegment = pktinfo.can_desegment
+        --pktinfo.can_desegment = 2
         --Dissector.get("tls"):call(tvb, pktinfo, tunnel_tree)
+        --pktinfo.port_type = _EPAN.PT_NONE
+        --pktinfo.can_desegment = 2
+        --Dissector.get("http-over-tls"):call(tvb, pktinfo, tunnel_tree)
+        --
+        --pktinfo.port_type = save_port_type
+        --pktinfo.can_desegment = save_can_desegment
+
+
+
+
+
+
 
         ---
         --- If we call built-in TLS dissector upon tunneled data, Wireshark
@@ -136,7 +175,9 @@ local function doDissect(tvb, pktinfo, root)
         ---        behaviour incurs.
         ---     2. Create a customized coarse-grained TLS dissector. Since we only need
         ---        to understand some of the TLS content when deal with Trojan traffic.
-        --- Currently, I'm struggling with 2.
+        ---     3. Export the inner payload as EXPORTED_PDU, and re-dissect the export
+        ---        PDU files.
+        --- Currently, I'm struggling with 3.
         ---
         --- TLS 1.2 handling routine
         --- TODO: Implement coarse-grained TLS 1.2 dissector.
@@ -154,7 +195,7 @@ end
 
 function trojan.dissector(tvb, pktinfo, root)
 
-    --- ################ MyTrojan Check ###############
+    --- ################ Trojan Check ###############
     --- ################    TCP Check   ###############
 
     --- In regular routine, TCP Check is disabled.
@@ -173,7 +214,7 @@ function trojan.dissector(tvb, pktinfo, root)
     --local frame_num = f_frame_num().value
 
     --- ################ TLS Check End  ###############
-    --- ################ MyTrojan Check End ###############
+    --- ################ Trojan Check End ###############
 
     pktinfo.cols.protocol:set(PROTOCOL_NAME)
 
@@ -188,7 +229,7 @@ function trojan.dissector(tvb, pktinfo, root)
 end
 
 --- Due to TLS-ALPN, the Upgrade mechanism of HTTP will force Wireshark to trigger
---- HTTP/2 (HTTP/1.1) heuristic dissector for MyTrojan dissection. Therefore, it seems
+--- HTTP/2 (HTTP/1.1) heuristic dissector for Trojan dissection. Therefore, it seems
 --- that regular MyTrojan dissector registration (i.e., through add port to TCP/TLS
 --- DissectorTable) will be overridden by HTTP dissectors (the dissector written in
 --- C would have similar effect).
@@ -218,6 +259,8 @@ local function enableDissector()
         DissectorTable.get("tcp.port"):add(port, trojan)
         -- supports also TLS decryption if the session keys are configured in Wireshark
         DissectorTable.get("tls.port"):add(port, trojan)
+        DissectorTable.get("tls.alpn"):add("h2", trojan)
+        DissectorTable.get("tls.alpn"):add("http/1.1", trojan)
     end
 end
 -- call it now, because we're enabled by default
