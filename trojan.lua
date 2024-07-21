@@ -82,12 +82,15 @@ local pf_tunnel_TLS = ProtoField.bytes("trojan.tunnel_data.tunnel_tls", "Tunnele
 local pf_TLS_content_type = ProtoField.uint8("trojan.tls_content_type", "Content Type")
 local pf_TLS_app_data = ProtoField.bytes("trojan.tls_app_data", "Application Data")
 
+
 trojan.fields = {
     pf_passwd, pf_tunnel_data, pf_request, pf_cmd, pf_atype, pf_dst_addr,
     pf_dst_port, pf_payload
 }
 
 local f_tls_content_type = Field.new("tls.record.content_type")
+local f_data = Field.new("data.data")
+local f_http_content_length = Field.new("http.content_length")
 
 local function doDissect(tvb, pktinfo, root)
     -- Application Data packet has been encountered. The following Application Data
@@ -107,6 +110,7 @@ local function doDissect(tvb, pktinfo, root)
             (tvb(58, 1):int() == 1) then
         root:add(pf_passwd, tvb(0, 56))
 
+        --print(string.tohex(tvb(0):string()))
         local remaining_tvb = tvb(58)
         local request_length = get_request_length(remaining_tvb)
         local request_tree = root:add(pf_request, remaining_tvb(0, request_length))
@@ -114,56 +118,59 @@ local function doDissect(tvb, pktinfo, root)
         request_tree:add(pf_atype, remaining_tvb(1, 1))
         -- Before URL, it seems that there is a special byte.
         request_tree:add(pf_dst_addr, remaining_tvb(3, request_length - 7))
-        request_tree:add(pf_dst_port, remaining_tvb(request_length - 2, 2))
+        request_tree:add(pf_dst_port, remaining_tvb(request_length - 4, 2))
+        --request_tree:add(pf_payload, remaining_tvb(request_length))
 
         pktinfo.cols.info = "Trojan Request"
 
         --print("Frame: .." .. frame_num .. " Request Length: " .. request_length)
     else
         -- Inner payload is actually the tunneled TLS packet.
+
         local tunnel_tree = root:add(pf_tunnel_data, tvb(0))
         pktinfo.cols.info = "Trojan Tunneled Data "
-
 
         local save_port_type = pktinfo.port_type
         pktinfo.port_type = _EPAN.PT_NONE
         local save_can_desegment = pktinfo.can_desegment
-        pktinfo.can_desegment = 2
+        pktinfo.can_desegment = 3
         Dissector.get("tls"):call(tvb, pktinfo, tunnel_tree)
+
+        ---
+        --- The following code chunk
+        ---     can't reassemble HTTP/2 conversation, only the header MAGIC will be recognized properly
+        ---     can't recognize HTTP/1.1 response
+        ---
+
+        --if f_data() ~= nil then
+        --    local data_tvb = f_data().range:tvb()
+        --    local app_tree = tunnel_tree:add(pf_TLS_app_data, data_tvb)
+        --    local save_inner_port_type = pktinfo.port_type
+        --    pktinfo.port_type = _EPAN.PT_SCTP
+        --    local save_inner_can_desegment = pktinfo.can_desegment
+        --    pktinfo.can_desegment = 2
+        --    Dissector.get("http"):call(data_tvb, pktinfo, app_tree)
+        --end
 
         pktinfo.port_type = save_port_type
         pktinfo.can_desegment = save_can_desegment
 
         ---
-        --- The following HTTP dissection gives
+        --- The following code chunk gives many Continuation on HTTP/1.1
+
+        if f_data() ~= nil then
+            local data_tvb = f_data().range:tvb()
+            local app_tree = tunnel_tree:add(pf_TLS_app_data, data_tvb)
+            Dissector.get("http"):call(data_tvb, pktinfo, app_tree)
+        end
+
+
+        ---
+        --- The following code chunk gives
         ---     many Continuation on HTTP/1.1
         ---     many Ignored Unknown Record or Malformed Frame on HTTP/2
         ---
-        --Dissector.get("http-over-tls"):call(tvb, pktinfo, tunnel_tree)
-        Dissector.get("http2"):call(tvb, pktinfo, tunnel_tree)
-
-        ---
-        --- The following HTTP dissection gives
-        --- Lua Error: "...wireshark\epan\proto.c:7992: failed assertion "fixed_item->parent == tree"
-        ---
-
-        --local save_port_type = pktinfo.port_type
-        --pktinfo.port_type = _EPAN.PT_NONE
-        --local save_can_desegment = pktinfo.can_desegment
-        --pktinfo.can_desegment = 2
-        --Dissector.get("tls"):call(tvb, pktinfo, tunnel_tree)
-        --pktinfo.port_type = _EPAN.PT_NONE
-        --pktinfo.can_desegment = 2
-        --Dissector.get("http-over-tls"):call(tvb, pktinfo, tunnel_tree)
-        --
-        --pktinfo.port_type = save_port_type
-        --pktinfo.can_desegment = save_can_desegment
-
-
-
-
-
-
+        --Dissector.get("http"):call(tvb, pktinfo, tunnel_tree)
 
         ---
         --- If we call built-in TLS dissector upon tunneled data, Wireshark
@@ -219,13 +226,13 @@ function trojan.dissector(tvb, pktinfo, root)
     pktinfo.cols.protocol:set(PROTOCOL_NAME)
 
     local tree = root:add(trojan, tvb)
-
     -- set the default text for Info column, it will be overridden later if possible
     if default_settings.info_text then
         pktinfo.cols.info = "Trojan data"
     end
 
     doDissect(tvb, pktinfo, tree)
+
 end
 
 --- Due to TLS-ALPN, the Upgrade mechanism of HTTP will force Wireshark to trigger
@@ -256,7 +263,7 @@ end
 
 local function enableDissector()
     for _, port in ipairs(default_settings.ports) do
-        DissectorTable.get("tcp.port"):add(port, trojan)
+        --DissectorTable.get("tcp.port"):add(port, trojan)
         -- supports also TLS decryption if the session keys are configured in Wireshark
         DissectorTable.get("tls.port"):add(port, trojan)
         DissectorTable.get("tls.alpn"):add("h2", trojan)
@@ -298,6 +305,8 @@ end
 
 get_request_length =  function (tvb)
     local begin, _ = string.find(tvb:string(), GUARD)
+    --print(string.tohex(tvb:string()))
+    --print(begin)
     return begin - 1
 end
 
