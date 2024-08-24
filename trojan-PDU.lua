@@ -56,9 +56,9 @@ function trojan_pdu.dissector(tvb, pktinfo, root)
     end
 
     local data = pf_data().range
-    print("TLS Segment Data")
+    --print("TLS Segment Data")
 
-    Dissector.get("http2"):call(data:tvb(), pktinfo, root)
+    Dissector.get("tls"):call(data:tvb(), pktinfo, root)
 end
 
-register_postdissector(trojan_pdu)
+--register_postdissector(trojan_pdu)

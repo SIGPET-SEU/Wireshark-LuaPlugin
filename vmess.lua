@@ -5,3 +5,176 @@
 --- Version: 0.0.1
 ---
 
+local string_r = require('utils.string_r')
+
+local debug_level = {
+    DISABLED = 0,
+    LEVEL_1  = 1,
+    LEVEL_2  = 2
+}
+
+local DEBUG = debug_level.LEVEL_1
+
+local default_settings =
+{
+    debug_level = DEBUG,
+    ports = { 20332 },   -- the default TCP port for Trojan
+    reassemble = true, -- whether we try reassembly or not
+    info_text = true,  -- show our own Info column data or TCP defaults
+    ports_in_info = true, -- show TCP ports in Info column
+}
+
+---
+--- Search for a specific byte string in tvb. For example, given tvb = {01 16 03 03 22 A2 F0 16 03 03}
+--- and string = 16 03 03, the return should be {2, 8} (Note that Lua starts with 1, not 0).
+--- @param tvb, the buffer.
+--- @param str, the target string for searching.
+--- @return table the table that contains all the start positions for string in tvb.
+---
+local tvb_search_str
+
+---
+--- The wrapper function for tvb_search_string. It searches in tvb each string of the string table, and groups
+--- the returns into a single table.
+--- @param tvb, the buffer.
+--- @param str_table, the string table.
+--- @return table the table that contains all the returns of tvb_search_string.
+---
+local tvb_search_str_table
+
+local print_search_group
+
+local vmess = Proto("VMess", "VMess Protocol")
+-- for some reason the protocol name is shown in UPPERCASE in Protocol column
+-- (and in Proto.name), so let's define a string to override that
+local PROTOCOL_NAME = "VMess"
+
+local pf_request = ProtoField.bytes("vmess.request", "VMess Request")
+local pf_auth = ProtoField.bytes("vmess.auth", "VMess Auth")
+
+vmess.fields = {
+    pf_request, pf_auth
+}
+
+local f_frame_number = Field.new("frame.number")
+
+
+local TLS_signature = {
+    CHANGE_CIPHER_SPEC="\x14\x03\x03",
+    ALERT = "\x15\x03\x03",
+    HANDSHAKE = "\x16\x03\x03",
+    HANDSHAKE_LEGACY = "\x16\x03\x01",
+    APPLICATION_DATA = "\x17\x03\x03"
+}
+
+local function dissect_request(tvb, pktinfo, root)
+    --- Currently, we do not dissect VMess request without decryption.
+    pktinfo.cols.info = "VMess Request"
+    local request_tree = root:add(pf_request, tvb(0))
+    request_tree:add(pf_auth, tvb(0, 16))
+end
+
+function vmess.dissector(tvb, pktinfo, root)
+    local tree = root:add(vmess, tvb)
+    --if f_frame_number().value == 14 then
+    --    io.write("Frame Number ", f_frame_number().value, ": ")
+    --    print(string_r.tohex(tvb:raw()))
+    --    --print(string_r.tohex(tvb:raw()))
+    --end
+
+
+    local search_group = tvb_search_str_table(tvb, TLS_signature)
+
+    local is_request = true
+    for _, v in pairs(search_group) do
+        if #v > 0 then
+            --io.write("Frame Number ", f_frame_number().value, ": ")
+            --print_search_group(search_group)
+            --print()
+            is_request = false
+            break
+        end
+    end
+
+    if is_request then
+        dissect_request(tvb, pktinfo, tree)
+    end
+end
+
+local function enableDissector()
+    for _, port in ipairs(default_settings.ports) do
+        --DissectorTable.get("tcp.port"):add(port, trojan)
+        -- supports also TLS decryption if the session keys are configured in Wireshark
+        DissectorTable.get("tcp.port"):add(port, vmess)
+    end
+end
+-- call it now, because we're enabled by default
+enableDissector()
+
+
+-- register our preferences
+vmess.prefs.reassemble = Pref.bool("Reassemble VMess messages spanning multiple TCP segments",
+        default_settings.reassemble, "Whether the VMess dissector should reassemble messages " ..
+                "spanning multiple TCP segments. To use this option, you must also enable \"Allow subdissectors to " ..
+                "reassemble TCP streams\" in the TCP protocol settings")
+
+vmess.prefs.info_text = Pref.bool("Show VMess protocol data in Info column",
+        default_settings.info_text, "Disable this to show the default TCP protocol data in the Info column")
+
+vmess.prefs.ports_in_info = Pref.bool("Show TCP ports in Info column",
+        default_settings.ports_in_info, "Disable this to have only VMess data in the Info column")
+
+-- the function for handling preferences being changed
+function vmess.prefs_changed()
+    if default_settings.reassemble ~= vmess.prefs.reassemble then
+        default_settings.reassemble = vmess.prefs.reassemble
+        -- capture file reload needed
+        reload()
+    elseif default_settings.info_text ~= vmess.prefs.info_text then
+        default_settings.info_text = vmess.prefs.info_text
+        -- capture file reload needed
+        reload()
+    elseif default_settings.ports_in_info ~= vmess.prefs.ports_in_info then
+        default_settings.ports_in_info = vmess.prefs.ports_in_info
+        -- capture file reload needed
+        reload()
+    elseif default_settings.ports ~= vmess.prefs.ports then
+        disableDissector()
+        default_settings.ports = vmess.prefs.ports
+        enableDissector()
+    end
+end
+
+
+tvb_search_str = function(tvb, str)
+    local tvb_string = tvb():string() -- tvb():string() may return an empty string for some unknown reason
+    local tvb_firsts = {}
+    local firsts, _ = string_r.find_all(tvb_string, str)
+    if #firsts == 0 then
+        return firsts
+    end
+    -- Since tvb begin with 0, each element in firsts should minus 1.
+    for i = 1, #firsts do
+        tvb_firsts[i] = (firsts[i] - 1) // 2
+    end
+    return tvb_firsts
+end
+
+tvb_search_str_table = function(tvb, str_table)
+    local search_group = {}
+    for sig_name, sig_value in pairs(str_table) do
+        local tvb_firsts = tvb_search_str(tvb, sig_value)
+        search_group[sig_name] = tvb_firsts
+    end
+    return search_group
+end
+
+print_search_group = function(search_group)
+    io.write("{")
+    for k, v in pairs(search_group) do
+        io.write(k, ": ")
+        string_r.print_seq(v)
+        io.write(", ")
+    end
+    io.write("}")
+end

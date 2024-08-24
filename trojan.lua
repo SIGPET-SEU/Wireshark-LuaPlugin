@@ -133,7 +133,7 @@ local function doDissect(tvb, pktinfo, root)
         local save_port_type = pktinfo.port_type
         pktinfo.port_type = _EPAN.PT_NONE
         local save_can_desegment = pktinfo.can_desegment
-        pktinfo.can_desegment = 3
+        pktinfo.can_desegment = 2
         Dissector.get("tls"):call(tvb, pktinfo, tunnel_tree)
 
         ---
@@ -142,15 +142,15 @@ local function doDissect(tvb, pktinfo, root)
         ---     can't recognize HTTP/1.1 response
         ---
 
-        --if f_data() ~= nil then
-        --    local data_tvb = f_data().range:tvb()
-        --    local app_tree = tunnel_tree:add(pf_TLS_app_data, data_tvb)
-        --    local save_inner_port_type = pktinfo.port_type
-        --    pktinfo.port_type = _EPAN.PT_SCTP
-        --    local save_inner_can_desegment = pktinfo.can_desegment
-        --    pktinfo.can_desegment = 2
-        --    Dissector.get("http"):call(data_tvb, pktinfo, app_tree)
-        --end
+        if f_data() ~= nil then
+            local data_tvb = f_data().range:tvb()
+            local app_tree = tunnel_tree:add(pf_TLS_app_data, data_tvb)
+            local save_inner_port_type = pktinfo.port_type
+            pktinfo.port_type = _EPAN.PT_SCTP
+            local save_inner_can_desegment = pktinfo.can_desegment
+            pktinfo.can_desegment = 2
+            Dissector.get("http"):call(data_tvb, pktinfo, app_tree)
+        end
 
         pktinfo.port_type = save_port_type
         pktinfo.can_desegment = save_can_desegment
@@ -158,11 +158,11 @@ local function doDissect(tvb, pktinfo, root)
         ---
         --- The following code chunk gives many Continuation on HTTP/1.1
 
-        if f_data() ~= nil then
-            local data_tvb = f_data().range:tvb()
-            local app_tree = tunnel_tree:add(pf_TLS_app_data, data_tvb)
-            Dissector.get("http"):call(data_tvb, pktinfo, app_tree)
-        end
+        --if f_data() ~= nil then
+        --    local data_tvb = f_data().range:tvb()
+        --    local app_tree = tunnel_tree:add(pf_TLS_app_data, data_tvb)
+        --    Dissector.get("http"):call(data_tvb, pktinfo, app_tree)
+        --end
 
 
         ---
