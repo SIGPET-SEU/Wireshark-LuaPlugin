@@ -78,8 +78,8 @@ function vmess.dissector(tvb, pktinfo, root)
     local tree = root:add(vmess, tvb)
     --if f_frame_number().value == 14 then
     --    io.write("Frame Number ", f_frame_number().value, ": ")
-    --    print(string_r.tohex(tvb:raw()))
-    --    --print(string_r.tohex(tvb:raw()))
+    --    print(string_r.tohex(tvb():string())) -- print nothing
+    --    --print(string_r.tohex(tvb:raw())) -- print the actual buffer content
     --end
 
 
@@ -147,7 +147,8 @@ end
 
 
 tvb_search_str = function(tvb, str)
-    local tvb_string = tvb():string() -- tvb():string() may return an empty string for some unknown reason
+    --local tvb_string = tvb():string() -- tvb():string() may return an empty string for some unknown reason
+    local tvb_string = tvb:raw() -- use raw instead.
     local tvb_firsts = {}
     local firsts, _ = string_r.find_all(tvb_string, str)
     if #firsts == 0 then
