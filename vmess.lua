@@ -44,6 +44,11 @@ local tvb_search_str_table
 
 local print_search_group
 
+---
+--- Merge and sort (in ascending order) the search group into a single sequence.
+---
+local merge_search_group
+
 local vmess = Proto("VMess", "VMess Protocol")
 -- for some reason the protocol name is shown in UPPERCASE in Protocol column
 -- (and in Proto.name), so let's define a string to override that
@@ -51,12 +56,15 @@ local PROTOCOL_NAME = "VMess"
 
 local pf_request = ProtoField.bytes("vmess.request", "VMess Request")
 local pf_auth = ProtoField.bytes("vmess.auth", "VMess Auth")
+local pf_response_header = ProtoField.bytes("vmess.response_header", "VMess Response Header")
 
 vmess.fields = {
-    pf_request, pf_auth
+    pf_request, pf_auth, pf_response_header
 }
 
 local f_frame_number = Field.new("frame.number")
+local f_tcp_payload = Field.new("tcp.payload")
+local f_tcp_segment_data = Field.new("tcp.segment_data")
 
 
 local TLS_signature = {
@@ -67,11 +75,22 @@ local TLS_signature = {
     APPLICATION_DATA = "\x17\x03\x03"
 }
 
+local auth = "\xb0\xb2\x5c\xda\x68\x1c\x15\x53\x74\xb3\x5b\x5f\xcc\x3f\x81\xe7"
+
 local function dissect_request(tvb, pktinfo, root)
     --- Currently, we do not dissect VMess request without decryption.
     pktinfo.cols.info = "VMess Request"
     local request_tree = root:add(pf_request, tvb(0))
     request_tree:add(pf_auth, tvb(0, 16))
+end
+
+local function dissect_response(tvb, pktinfo, root)
+    pktinfo.cols.info = "VMess Response"
+    local response_tree = root:add(pf_response_header, tvb(0, 38))
+end
+
+local function dissect_data(tvb, pktinfo, root)
+
 end
 
 function vmess.dissector(tvb, pktinfo, root)
@@ -84,20 +103,85 @@ function vmess.dissector(tvb, pktinfo, root)
 
 
     local search_group = tvb_search_str_table(tvb, TLS_signature)
+    local merged_search_group = merge_search_group(search_group)
 
-    local is_request = true
-    for _, v in pairs(search_group) do
-        if #v > 0 then
-            --io.write("Frame Number ", f_frame_number().value, ": ")
-            --print_search_group(search_group)
-            --print()
-            is_request = false
-            break
+    local is_request = false
+
+    --if f_frame_number().value == 4 then
+    --    print("Frame Number ", f_frame_number().value, ": , auth: ", string.tohex(tvb:raw()))
+    --end
+
+    if tvb:len() > 61 and string.sub(tvb:raw(), 0, 16) == auth then is_request = true end
+
+    --if #merged_search_group > 0 then is_request = false end
+
+    if not is_request then
+        -- If the first element in the merged search group is at 40-th byte,
+        -- this packet contains the server response.
+
+        --io.write("Frame Number ", f_frame_number().value, ": ")
+        --string_r.print_seq(merged_search_group)
+        --print()
+        --if f_frame_number().value == 8 then
+        --    print(string.tohex(tvb:raw()))
+        --end
+
+        if #merged_search_group > 0 then
+            if merged_search_group[1] == 40 then
+                dissect_response(tvb, pktinfo, tree)
+            end
+
+            local chunk_offset = merged_search_group[1] - 2
+            local chunk_length = tvb(chunk_offset, 2):int()
+            local bytes_needed = chunk_length + 2
+
+            --if f_frame_number().value == 36 then
+            --    print("Frame Number ", f_frame_number().value, ": , byte needed: ", bytes_needed)
+            --end
+
+            --if f_frame_number().value == 36 then
+            --    print("Frame Number ", f_frame_number().value, "Offset: ", pktinfo.desegment_offset)
+            --end
+
+            local bytes_provided = tvb:len() - chunk_offset
+            if bytes_provided < bytes_needed and default_settings.reassemble then
+                pktinfo.desegment_offset = chunk_offset
+                pktinfo.desegment_len = bytes_needed - bytes_provided
+                pktinfo.cols.info = "[Partial VMess data, enable TCP subdissector reassembly]"
+            elseif bytes_provided > bytes_needed then
+
+            else
+                return
+            end
+        else
+            if f_tcp_segment_data() ~= nil and f_tcp_segment_data().len < f_tcp_payload().len then
+                --- In this situation, the previous PDU has been reassembled. Therefore, if the length of the
+                --- segment data is smaller than that of TCP payload, we dissect the remaining data.
+                --- NOTE: the tvb here is the tvb of the remaining data.
+                local chunk_length = tvb(0, 2):int()
+                local bytes_needed = chunk_length + 2
+
+                local bytes_provided = tvb:len()
+                if bytes_provided < bytes_needed and default_settings.reassemble then
+                    pktinfo.desegment_offset = 0
+                    pktinfo.desegment_len = bytes_needed - bytes_provided
+                    pktinfo.cols.info = "[Partial VMess data, enable TCP subdissector reassembly]"
+                end
+            end
         end
+        return
     end
+
+    --local is_request = true
+    --for _, v in pairs(search_group) do
+    --    if #v > 0 then is_request = false break end
+    --end
+
+
 
     if is_request then
         dissect_request(tvb, pktinfo, tree)
+        return
     end
 end
 
@@ -156,7 +240,7 @@ tvb_search_str = function(tvb, str)
     end
     -- Since tvb begin with 0, each element in firsts should minus 1.
     for i = 1, #firsts do
-        tvb_firsts[i] = (firsts[i] - 1) // 2
+        tvb_firsts[i] = firsts[i] - 1
     end
     return tvb_firsts
 end
@@ -178,4 +262,15 @@ print_search_group = function(search_group)
         io.write(", ")
     end
     io.write("}")
+end
+
+merge_search_group = function(search_group)
+    local result = {}
+    for _, v in pairs(search_group) do
+        for _, s in ipairs(v) do
+            result[#result + 1] = s
+        end
+    end
+    table.sort(result)
+    return result
 end
