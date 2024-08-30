@@ -5,6 +5,8 @@
 --- Version: 0.0.1
 ---
 
+local tls_dissector = Dissector.get("tls")
+
 local string_r = require('utils.string_r')
 
 local debug_level = {
@@ -93,6 +95,7 @@ local function dissect_response(tvb, pktinfo, root)
     local response_tree = tree:add(pf_response_header, tvb(0, 38))
     tree:add(pf_length, tvb(38, 2))
     tree:add(pf_payload, tvb(40))
+
 end
 
 local function dissect_data(tvb, pktinfo, root)
@@ -100,6 +103,9 @@ local function dissect_data(tvb, pktinfo, root)
     local tree = root:add(vmess, tvb(0))
     tree:add(pf_length, tvb(0, 2))
     tree:add(pf_payload, tvb(2))
+
+    --local t = next_tvb(tvb)
+
 end
 
 function vmess.dissector(tvb, pktinfo, root)
