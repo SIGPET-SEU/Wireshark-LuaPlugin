@@ -96,6 +96,7 @@ local function dissect_response(tvb, pktinfo, root)
     tree:add(pf_length, tvb(38, 2))
     tree:add(pf_payload, tvb(40))
 
+    tls_dissector(tvb(40):tvb(), pktinfo, tree)
 end
 
 local function dissect_data(tvb, pktinfo, root)
@@ -104,8 +105,7 @@ local function dissect_data(tvb, pktinfo, root)
     tree:add(pf_length, tvb(0, 2))
     tree:add(pf_payload, tvb(2))
 
-    --local t = next_tvb(tvb)
-
+    tls_dissector(tvb(2):tvb(), pktinfo, tree)
 end
 
 function vmess.dissector(tvb, pktinfo, root)
