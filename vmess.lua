@@ -57,9 +57,11 @@ local PROTOCOL_NAME = "VMess"
 local pf_request = ProtoField.bytes("vmess.request", "VMess Request")
 local pf_auth = ProtoField.bytes("vmess.auth", "VMess Auth")
 local pf_response_header = ProtoField.bytes("vmess.response_header", "VMess Response Header")
+local pf_length = ProtoField.uint16("vmess.length", "Length")
+local pf_payload = ProtoField.bytes("vmess.payload", "VMess Payload")
 
 vmess.fields = {
-    pf_request, pf_auth, pf_response_header
+    pf_request, pf_auth, pf_response_header, pf_length, pf_payload
 }
 
 local f_frame_number = Field.new("frame.number")
@@ -85,19 +87,19 @@ local function dissect_request(tvb, pktinfo, root)
     request_tree:add(pf_auth, tvb(0, 16))
 end
 
-local function dissect_response_header(tvb, pktinfo, root)
-    --print("TVB Length: ", tvb:len())
+local function dissect_response(tvb, pktinfo, root)
     pktinfo.cols.info = "VMess Response"
     local tree = root:add(vmess, tvb(0))
     local response_tree = tree:add(pf_response_header, tvb(0, 38))
-    Dissector.get("tls"):call(tvb:range(40):tvb(), pktinfo, tree)
+    tree:add(pf_length, tvb(38, 2))
+    tree:add(pf_payload, tvb(40))
 end
 
 local function dissect_data(tvb, pktinfo, root)
-    print("Frame Number ", f_frame_number().value, ": ", string_r.tohex(string.sub(tvb:raw(), 3, 10)))
     pktinfo.cols.info = "VMess Data"
     local tree = root:add(vmess, tvb(0))
-    Dissector.get("tls"):call(tvb:range(2):tvb(), pktinfo, tree)
+    tree:add(pf_length, tvb(0, 2))
+    tree:add(pf_payload, tvb(2))
 end
 
 function vmess.dissector(tvb, pktinfo, root)
@@ -106,9 +108,6 @@ function vmess.dissector(tvb, pktinfo, root)
     --    print(string_r.tohex(tvb():string())) -- print nothing
     --    print(string_r.tohex(tvb:raw())) -- print the actual buffer content
     --end
-
-
-
 
     local is_request = false
 
@@ -143,88 +142,29 @@ function vmess.dissector(tvb, pktinfo, root)
         end
 
         chunk_length = tvb(chunk_offset, 2):int()
-        bytes_needed = chunk_length + 2
 
-        local bytes_provided = tvb:len() - chunk_offset
+        if is_response_header then
+            bytes_needed = chunk_length + 2 + 38
+        else
+            bytes_needed = chunk_length + 2
+        end
+
+        local bytes_provided = tvb:len()
+
         if bytes_provided < bytes_needed and default_settings.reassemble then
-            pktinfo.desegment_offset = chunk_offset
+            pktinfo.desegment_offset = 0
             pktinfo.desegment_len = bytes_needed - bytes_provided
+            -- This message should be overwritten by later dissection.
             pktinfo.cols.info = "[Partial VMess data, enable TCP subdissector reassembly]"
             return
         end
 
         if is_response_header then
-            dissect_response_header(tvb, pktinfo, root)
+            dissect_response(tvb, pktinfo, root)
         else
             dissect_data(tvb, pktinfo, root)
         end
     end
-
-
-    --    --- Decide if the packet is segmented.
-    --    --if f_tcp_segment_data() ~= nil and f_tcp_segment_data() < f_tcp_payload().len then
-    --    if tvb:len() < f_tcp_payload().len then
-    --        ---
-    --        --- In this situation, the previous PDU has been reassembled. Therefore, if the length of the
-    --        --- segment data is smaller than that of TCP payload, we dissect the remaining data.
-    --        --- NOTE: the tvb here is the tvb of the whole previously reassembled buffer. For example,
-    --        --- if Frame 1 [60~1428], Frame 2 [0~1428], Frame 3 [0, 114] were reassembled, the tvb of Frame 3 should
-    --        --- be tvb = <Frame 1 [60~1428], Frame 2 [0~1428], Frame 3 [0~114]>
-    --        ---
-    --
-    --        local chunk_length = tvb(0, 2):int()
-    --        local bytes_needed = chunk_length + 2
-    --
-    --        --print("Segmented Frame Number ", f_frame_number().value, ": , Bytes needed: ", string.tohex(string.sub(tvb:raw(), 1, 2)))
-    --
-    --        local bytes_provided = tvb:len()
-    --        --print("Segmented Frame Number: ", f_frame_number().value, ", Bytes provided: ", bytes_provided)
-    --        if bytes_provided < bytes_needed and default_settings.reassemble then
-    --            pktinfo.desegment_offset = 0
-    --            pktinfo.desegment_len = bytes_needed - bytes_provided
-    --            pktinfo.cols.info = "[Partial VMess data, enable TCP subdissector reassembly]"
-    --        else
-    --            -- Do something
-    --        end
-    --        return
-    --    elseif tvb:len() == f_tcp_payload().len and #merged_search_group > 0 then
-    --        --if f_frame_number().value == 51 then
-    --        --    --print("Frame Number ", f_frame_number().value, ": , Search group: ", merged_search_group[1])
-    --        --    print("TVB: ", tvb:len())
-    --        --end
-    --
-    --        local chunk_offset = merged_search_group[1] - 2
-    --        local chunk_length = tvb(chunk_offset, 2):int()
-    --        local bytes_needed = chunk_length + 2
-    --
-    --        --print("Frame Number: ", f_frame_number().value, ", Bytes needed: ", string.tohex(string.sub(tvb:raw(), 1, 2)))
-    --
-    --        local bytes_provided = tvb:len() - chunk_offset
-    --        if bytes_provided < bytes_needed and default_settings.reassemble then
-    --            pktinfo.desegment_offset = chunk_offset
-    --            pktinfo.desegment_len = bytes_needed - bytes_provided
-    --            pktinfo.cols.info = "[Partial VMess data, enable TCP subdissector reassembly]"
-    --        --elseif bytes_provided > bytes_needed then
-    --        --    -- Do something
-    --        --else
-    --        --    return
-    --        end
-    --        return
-    --    --elseif tvb:len() > f_tcp_payload().len then
-    --    --    -- There might be something wrong.
-    --    --    dissect_data(tvb, pktinfo, root)
-    --    --    return
-    --    end
-    --
-    --end
-
-    -- If the first element in the merged search group is at 40-th byte,
-    -- this packet contains the server response.
-    --if merged_search_group[1] == 40 then
-    --    dissect_response(tvb, pktinfo, root)
-    --else
-    --    dissect_data(tvb, pktinfo, root)
-    --end
 end
 
 local function enableDissector()
