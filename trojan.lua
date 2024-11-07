@@ -155,6 +155,8 @@ local function doDissect(tvb, pktinfo, root)
         pktinfo.port_type = save_port_type
         pktinfo.can_desegment = save_can_desegment
 
+        pktinfo.cols.protocol:set(PROTOCOL_NAME)
+
         ---
         --- The following code chunk gives many Continuation on HTTP/1.1
 
